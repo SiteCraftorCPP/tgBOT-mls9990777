@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram funnel bot mls9990777
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/tgbot-mls9990777
+EnvironmentFile=/var/www/tgbot-mls9990777/.env
+ExecStart=/var/www/tgbot-mls9990777/.venv/bin/python /var/www/tgbot-mls9990777/bot.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
