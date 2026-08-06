@@ -172,9 +172,17 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             bot = FakeBot()
-            current_settings = settings(Path(temp_dir))
+            path = Path(temp_dir)
+            current_settings = settings(path)
+            database = Database(path / "test.sqlite3")
+            await database.initialize()
+            await database.start_user(
+                SimpleNamespace(
+                    from_user=SimpleNamespace(id=1, username="u", full_name="U")
+                )
+            )
             for step in range(1, 11):
-                await send_step(bot, 1, current_settings, step)
+                await send_step(bot, 1, current_settings, step, database)
 
             self.assertEqual(len(bot.photos), 0)
             self.assertEqual(len(bot.messages), 20)
@@ -188,8 +196,16 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             (image_dir / "IMG_1.JPG").write_bytes(b"placeholder")
             bot = FakeBot()
             card, after, _, _ = STEPS[1]
+            path = Path(temp_dir)
+            database = Database(path / "test.sqlite3")
+            await database.initialize()
+            await database.start_user(
+                SimpleNamespace(
+                    from_user=SimpleNamespace(id=1, username="u", full_name="U")
+                )
+            )
 
-            await send_step(bot, 1, settings(image_dir), 1)
+            await send_step(bot, 1, settings(image_dir), 1, database)
 
             self.assertEqual(len(bot.photos), 1)
             self.assertEqual(bot.photos[0][2], card)
@@ -211,8 +227,16 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             image_dir = Path(temp_dir)
             (image_dir / "step_2.jpg").write_bytes(b"placeholder")
             bot = FakeBot()
+            path = Path(temp_dir)
+            database = Database(path / "test.sqlite3")
+            await database.initialize()
+            await database.start_user(
+                SimpleNamespace(
+                    from_user=SimpleNamespace(id=1, username="u", full_name="U")
+                )
+            )
 
-            await send_step(bot, 1, settings(image_dir), 1)
+            await send_step(bot, 1, settings(image_dir), 1, database)
 
             self.assertEqual(len(bot.photos), 0)
             self.assertEqual(len(bot.messages), 2)

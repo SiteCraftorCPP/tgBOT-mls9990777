@@ -788,7 +788,7 @@ STEPS: dict[int, tuple[str, str, str, str]] = {
         "Не спеши. Возвращайся к вопросам. Отвечай на них честно — в первую "
         "очередь перед собой.\n\n"
         "Задача курса — не просто дать тебе новые мысли, а помочь увидеть свой "
-        "сценарий и начать делать другой выбор.\n\nПерейти к урокам.",
+        "сценарий и начать делать другой выбор.",
         "Доступ открыт. Начни с первого урока и проходи программу последовательно.",
         "Перейти к урокам",
         "course:open",
@@ -1012,7 +1012,13 @@ async def send_step_card(
 
 
 def build_step_markup(
-    step: int, settings: Settings, chat_id: int, button_text: str, callback_data: str
+    step: int,
+    settings: Settings,
+    chat_id: int,
+    button_text: str,
+    callback_data: str,
+    *,
+    purchased: bool = False,
 ) -> InlineKeyboardMarkup:
     if step == 8:
         return InlineKeyboardMarkup(
@@ -1031,6 +1037,17 @@ def build_step_markup(
             ]
         )
     if step == 9:
+        if purchased:
+            return InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="Перейти к урокам",
+                            url=settings.course_url,
+                        )
+                    ]
+                ]
+            )
         return keyboard(
             f"Оплатить {format_price_rub(settings.course_price_kopecks)}",
             "payment:start",
@@ -1049,7 +1066,13 @@ def build_step_markup(
     return keyboard(button_text, callback_data)
 
 
-async def send_step(bot: Bot, chat_id: int, settings: Settings, step: int) -> None:
+async def send_step(
+    bot: Bot,
+    chat_id: int,
+    settings: Settings,
+    step: int,
+    database: Database,
+) -> None:
     if step == 3:
         answers = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -1084,7 +1107,10 @@ async def send_step(bot: Bot, chat_id: int, settings: Settings, step: int) -> No
         return
 
     card, after, button_text, callback_data = STEPS[step]
-    markup = build_step_markup(step, settings, chat_id, button_text, callback_data)
+    purchased = await database.is_purchased(chat_id)
+    markup = build_step_markup(
+        step, settings, chat_id, button_text, callback_data, purchased=purchased
+    )
     await send_step_card(bot, chat_id, settings, step, card)
     await bot.send_message(chat_id, after, reply_markup=markup)
 
@@ -1094,7 +1120,7 @@ async def grant_paid_access(
 ) -> str:
     result = await database.mark_paid(telegram_id)
     if result != "not_found" and await database.needs_access_delivery(telegram_id):
-        await send_step(bot, telegram_id, settings, 10)
+        await send_step(bot, telegram_id, settings, 10, database)
         await database.mark_access_sent(telegram_id)
     return result
 
@@ -1420,11 +1446,8 @@ def create_router(settings: Settings, database: Database) -> Router:
         if status:
             await database.set_status(callback.from_user.id, status)
         if step == 9:
-            if await database.is_purchased(callback.from_user.id):
-                await send_step(callback.bot, callback.from_user.id, settings, 10)
-                return
             await database.start_payment(callback.from_user.id)
-        await send_step(callback.bot, callback.from_user.id, settings, step)
+        await send_step(callback.bot, callback.from_user.id, settings, step, database)
 
     @router.callback_query(F.data.startswith("segment:"))
     async def save_segment(callback: CallbackQuery) -> None:
@@ -1457,7 +1480,7 @@ def create_router(settings: Settings, database: Database) -> Router:
             return
         if await database.is_purchased(callback.from_user.id):
             await callback.answer("У тебя уже есть доступ")
-            await send_step(callback.bot, callback.from_user.id, settings, 10)
+            await send_step(callback.bot, callback.from_user.id, settings, 10, database)
             return
         await database.start_payment(callback.from_user.id)
         await callback.answer()
@@ -1731,6 +1754,11 @@ async def process_payment_reminders(
                 await database.release_reminder(telegram_id, sent + 1)
                 continue
             text, button_text = REMINDERS[sent]
+            if sent == 1:
+                button_text = (
+                    f"Получить доступ за "
+                    f"{format_price_rub(settings.course_price_kopecks)}"
+                )
             target_step = 8 if sent == 0 else 9
             await bot.send_message(
                 telegram_id,
