@@ -870,6 +870,15 @@ INVOICE_PRICE_LABEL = "Доступ к курсу"
 RECEIPT_ITEM_DESCRIPTION = "Доступ к онлайн-курсу"
 
 
+def format_price_rub(kopecks: int) -> str:
+    if kopecks % 100 == 0:
+        rubles = kopecks // 100
+        if rubles >= 1000:
+            return f"{rubles:,}".replace(",", " ") + " ₽"
+        return f"{rubles} ₽"
+    return f"{kopecks / 100:.2f}".replace(".", ",") + " ₽"
+
+
 def keyboard(text: str, callback_data: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1005,7 +1014,8 @@ def build_step_markup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Получить доступ за 1 990 ₽", callback_data="step:9"
+                        text=f"Получить доступ за {format_price_rub(settings.course_price_kopecks)}",
+                        callback_data="step:9",
                     )
                 ],
                 [
@@ -1016,7 +1026,10 @@ def build_step_markup(
             ]
         )
     if step == 9:
-        return keyboard(button_text, "payment:start")
+        return keyboard(
+            f"Оплатить {format_price_rub(settings.course_price_kopecks)}",
+            "payment:start",
+        )
     if step == 10:
         return InlineKeyboardMarkup(
             inline_keyboard=[

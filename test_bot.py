@@ -105,6 +105,12 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             "https://pay.example/order?product=1&telegram_id=42",
         )
 
+    def test_format_price_rub(self) -> None:
+        from bot import format_price_rub
+
+        self.assertEqual(format_price_rub(1000), "10 ₽")
+        self.assertEqual(format_price_rub(199000), "1 990 ₽")
+
     def test_yookassa_provider_data_contains_receipt(self) -> None:
         current_settings = settings(Path("."))
         payload = build_yookassa_provider_data(
