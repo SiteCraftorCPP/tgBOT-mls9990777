@@ -889,15 +889,15 @@ def keyboard(text: str, callback_data: str) -> InlineKeyboardMarkup:
     )
 
 
+def format_rub_amount_value(amount_kopecks: int) -> str:
+    return f"{amount_kopecks / 100:.2f}"
+
+
 def build_yookassa_provider_data(
     settings: Settings, amount_kopecks: int, description: str
 ) -> str | None:
     if not settings.yookassa_tax_system_code:
         return None
-    if amount_kopecks % 100 == 0:
-        value_rub: int | float = amount_kopecks // 100
-    else:
-        value_rub = round(amount_kopecks / 100.0, 2)
     return json.dumps(
         {
             "receipt": {
@@ -905,8 +905,11 @@ def build_yookassa_provider_data(
                 "items": [
                     {
                         "description": description[:128],
-                        "quantity": 1,
-                        "amount": {"value": value_rub, "currency": "RUB"},
+                        "quantity": "1.00",
+                        "amount": {
+                            "value": format_rub_amount_value(amount_kopecks),
+                            "currency": "RUB",
+                        },
                         "vat_code": settings.yookassa_vat_code or 1,
                         "payment_mode": "full_payment",
                         "payment_subject": "service",
@@ -1464,6 +1467,11 @@ def create_router(settings: Settings, database: Database) -> Router:
             try:
                 await send_course_invoice(
                     callback.bot, callback.message.chat.id, settings
+                )
+            except TelegramBadRequest as error:
+                logging.exception("Не удалось отправить счёт на оплату: %s", error)
+                await callback.message.answer(
+                    "Не удалось открыть оплату. Попробуй ещё раз через минуту."
                 )
             except Exception:
                 logging.exception("Не удалось отправить счёт на оплату")

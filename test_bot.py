@@ -118,7 +118,7 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNotNone(payload)
         self.assertIn("receipt", payload)
-        self.assertIn("199", payload)
+        self.assertIn('"value": "10.00"', payload)
 
     def test_yookassa_provider_data_disabled_without_tax_code(self) -> None:
         current_settings = Settings(
