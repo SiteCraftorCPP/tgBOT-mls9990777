@@ -35,24 +35,33 @@ images/IMG_10.PNG
 карточки** → **короткое сообщение после фото** с активной кнопкой. Если файла
 нет, отправляются только текстовые части карточки и follow-up.
 
-## Текущий сценарий оплаты
+## Оплата через ЮKassa (Telegram Payments)
 
-Пока `PAYMENT_URL` пуст, кнопка оплаты имитирует успешный платёж. После
-подключения провайдера:
+Интеграция идёт через **Telegram Payments**, не через прямой SDK ЮKassa:
 
-1. Укажите платёжную ссылку в `PAYMENT_URL`.
-2. Задайте случайный длинный `PAYMENT_WEBHOOK_SECRET`.
-3. Настройте провайдера на `POST /payment/success` с заголовком
-   `Authorization: Bearer <PAYMENT_WEBHOOK_SECRET>` и телом:
-
-```json
-{"telegram_id": 123456789}
+```text
+BotFather -> PAYMENT_PROVIDER_TOKEN -> send_invoice -> successful_payment -> доступ
 ```
 
-Endpoint идемпотентен: повторный webhook не создаёт повторную покупку.
+### Что указать в BotFather
 
-Для ручной выдачи доступа менеджером задайте его Telegram ID в `ADMIN_IDS` и
-отправьте боту:
+1. Открой `@BotFather` → твой бот → **Payments** → **YooMoney (YooKassa)**.
+2. Введи данные магазина:
+   - **Shop ID**: `1427327`
+   - **Secret Key**: ключ из личного кабинета ЮKassa (`live_...`)
+3. Скопируй выданный **provider token** в `.env` → `PAYMENT_PROVIDER_TOKEN`.
+
+### Что указать в личном кабинете ЮKassa
+
+- Магазин должен быть **активирован** и принимать платежи.
+- Для чеков 54-ФЗ в `.env` задай `YOOKASSA_TAX_SYSTEM_CODE` (1–6) и `YOOKASSA_VAT_CODE`.
+- HTTP-уведомления (webhook) ЮKassa для этой схемы **не нужны** — оплата
+  подтверждается через `successful_payment` в Telegram.
+- Цена курса: `COURSE_PRICE_KOPECKS=199000` (1 990 ₽).
+
+После оплаты бот автоматически выдаёт доступ (шаг 10) и кнопку перехода к урокам.
+
+Для ручной выдачи доступа менеджером:
 
 ```text
 /grant TELEGRAM_ID

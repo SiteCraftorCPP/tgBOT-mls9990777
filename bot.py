@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import logging
 import os
 import re
@@ -21,6 +22,7 @@ from aiogram.exceptions import (
     TelegramForbiddenError,
     TelegramNetworkError,
 )
+from aiogram.enums import ContentType
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     BotCommand,
@@ -28,7 +30,9 @@ from aiogram.types import (
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    LabeledPrice,
     Message,
+    PreCheckoutQuery,
 )
 from dotenv import load_dotenv
 
@@ -43,6 +47,10 @@ class Settings:
     database_path: Path
     image_dir: Path
     payment_url: str
+    payment_provider_token: str
+    course_price_kopecks: int
+    yookassa_tax_system_code: int
+    yookassa_vat_code: int
     course_url: str
     admin_ids: frozenset[int]
     reminder_delays: tuple[timedelta, ...]
@@ -82,6 +90,14 @@ class Settings:
             database_path=database_path,
             image_dir=image_dir,
             payment_url=os.getenv("PAYMENT_URL", "").strip(),
+            payment_provider_token=os.getenv("PAYMENT_PROVIDER_TOKEN", "").strip(),
+            course_price_kopecks=int(
+                os.getenv("COURSE_PRICE_KOPECKS", "199000")
+            ),
+            yookassa_tax_system_code=int(
+                os.getenv("YOOKASSA_TAX_SYSTEM_CODE", "0") or "0"
+            ),
+            yookassa_vat_code=int(os.getenv("YOOKASSA_VAT_CODE", "1") or "1"),
             course_url=os.getenv("COURSE_URL", "https://t.me/example_course").strip(),
             admin_ids=admin_ids,
             reminder_delays=tuple(timedelta(hours=value) for value in delay_values),
@@ -178,6 +194,19 @@ class Database:
                     created_at TEXT NOT NULL,
                     answered INTEGER NOT NULL DEFAULT 0,
                     FOREIGN KEY (telegram_id) REFERENCES users(telegram_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id INTEGER NOT NULL,
+                    currency TEXT NOT NULL,
+                    total_amount INTEGER NOT NULL,
+                    invoice_payload TEXT NOT NULL,
+                    telegram_payment_charge_id TEXT NOT NULL,
+                    provider_payment_charge_id TEXT,
+                    paid_at TEXT NOT NULL,
+                    FOREIGN KEY (telegram_id) REFERENCES users(telegram_id),
+                    UNIQUE(telegram_payment_charge_id)
                 );
                 """
             )
@@ -325,6 +354,38 @@ class Database:
             )
             await connection.commit()
             return "paid"
+
+    async def record_payment(
+        self,
+        telegram_id: int,
+        currency: str,
+        total_amount: int,
+        invoice_payload: str,
+        telegram_payment_charge_id: str,
+        provider_payment_charge_id: str | None,
+    ) -> bool:
+        now = to_db_time(utc_now())
+        async with self.connect() as connection:
+            cursor = await connection.execute(
+                """
+                INSERT OR IGNORE INTO payments(
+                    telegram_id, currency, total_amount, invoice_payload,
+                    telegram_payment_charge_id, provider_payment_charge_id, paid_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    telegram_id,
+                    currency.strip().upper(),
+                    int(total_amount),
+                    invoice_payload[:512],
+                    telegram_payment_charge_id[:256],
+                    (provider_payment_charge_id or "")[:256] or None,
+                    now,
+                ),
+            )
+            await connection.commit()
+        return cursor.rowcount > 0
 
     async def needs_access_delivery(self, telegram_id: int) -> bool:
         async with self.connect() as connection:
@@ -800,11 +861,73 @@ REMINDERS = (
 )
 
 
+INVOICE_PAYLOAD_COURSE = "course_access_v1"
+INVOICE_TITLE = (
+    "Курс «Почему красивые и стильные женщины часто остаются без семьи?»"
+)
+INVOICE_DESCRIPTION = "Доступ ко всем урокам курса сразу после оплаты."
+INVOICE_PRICE_LABEL = "Доступ к курсу"
+RECEIPT_ITEM_DESCRIPTION = "Доступ к онлайн-курсу"
+
+
 def keyboard(text: str, callback_data: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=text, callback_data=callback_data)]
         ]
+    )
+
+
+def build_yookassa_provider_data(
+    settings: Settings, amount_kopecks: int, description: str
+) -> str | None:
+    if not settings.yookassa_tax_system_code:
+        return None
+    if amount_kopecks % 100 == 0:
+        value_rub: int | float = amount_kopecks // 100
+    else:
+        value_rub = round(amount_kopecks / 100.0, 2)
+    return json.dumps(
+        {
+            "receipt": {
+                "tax_system_code": settings.yookassa_tax_system_code,
+                "items": [
+                    {
+                        "description": description[:128],
+                        "quantity": 1,
+                        "amount": {"value": value_rub, "currency": "RUB"},
+                        "vat_code": settings.yookassa_vat_code or 1,
+                        "payment_mode": "full_payment",
+                        "payment_subject": "service",
+                    }
+                ],
+            }
+        },
+        ensure_ascii=False,
+    )
+
+
+async def send_course_invoice(
+    bot: Bot, chat_id: int, settings: Settings
+) -> None:
+    if not settings.payment_provider_token:
+        raise RuntimeError("PAYMENT_PROVIDER_TOKEN is not configured")
+    amount = settings.course_price_kopecks
+    await bot.send_invoice(
+        chat_id=chat_id,
+        title=INVOICE_TITLE,
+        description=INVOICE_DESCRIPTION,
+        payload=INVOICE_PAYLOAD_COURSE,
+        provider_token=settings.payment_provider_token,
+        currency="RUB",
+        prices=[LabeledPrice(label=INVOICE_PRICE_LABEL, amount=amount)],
+        need_email=True,
+        send_email_to_provider=True,
+        need_phone_number=True,
+        send_phone_number_to_provider=True,
+        provider_data=build_yookassa_provider_data(
+            settings, amount, RECEIPT_ITEM_DESCRIPTION
+        ),
     )
 
 
@@ -892,19 +1015,8 @@ def build_step_markup(
                 ],
             ]
         )
-    if step == 9 and settings.payment_url:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=button_text,
-                        url=payment_url_for_user(settings.payment_url, chat_id),
-                    )
-                ]
-            ]
-        )
     if step == 9:
-        return keyboard(button_text, "payment:demo_success")
+        return keyboard(button_text, "payment:start")
     if step == 10:
         return InlineKeyboardMarkup(
             inline_keyboard=[
@@ -1323,12 +1435,25 @@ def create_router(settings: Settings, database: Database) -> Router:
 
     @router.callback_query(F.data == "payment:start")
     async def start_payment(callback: CallbackQuery) -> None:
+        if callback.from_user is None or callback.message is None:
+            return
         if await database.is_purchased(callback.from_user.id):
             await callback.answer("У тебя уже есть доступ")
             await send_step(callback.bot, callback.from_user.id, settings, 10)
             return
         await database.start_payment(callback.from_user.id)
         await callback.answer()
+        if settings.payment_provider_token:
+            try:
+                await send_course_invoice(
+                    callback.bot, callback.message.chat.id, settings
+                )
+            except Exception:
+                logging.exception("Не удалось отправить счёт на оплату")
+                await callback.message.answer(
+                    "Не удалось открыть оплату. Попробуй ещё раз через минуту."
+                )
+            return
         if settings.payment_url:
             markup = InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -1346,21 +1471,72 @@ def create_router(settings: Settings, database: Database) -> Router:
                 "Нажми кнопку ниже. После оплаты доступ откроется автоматически.",
                 reply_markup=markup,
             )
-        else:
-            await callback.message.answer(
-                "Платёжная система пока не подключена.\n\n"
-                "Для проверки MVP используй тестовое подтверждение:",
-                reply_markup=keyboard(
-                    "Тест: подтвердить успешную оплату", "payment:demo_success"
-                ),
+            return
+        await callback.message.answer(
+            "Платёжная система пока не подключена.\n\n"
+            "Для проверки MVP используй тестовое подтверждение:",
+            reply_markup=keyboard(
+                "Тест: подтвердить успешную оплату", "payment:demo_success"
+            ),
+        )
+
+    @router.pre_checkout_query()
+    async def pre_checkout_handler(
+        pre_checkout_query: PreCheckoutQuery, bot: Bot
+    ) -> None:
+        query = pre_checkout_query
+        if query.currency != "RUB":
+            await bot.answer_pre_checkout_query(
+                query.id, ok=False, error_message="Поддерживается только RUB."
             )
+            return
+        if query.invoice_payload != INVOICE_PAYLOAD_COURSE:
+            await bot.answer_pre_checkout_query(
+                query.id, ok=False, error_message="Неизвестный счёт."
+            )
+            return
+        if query.total_amount != settings.course_price_kopecks:
+            await bot.answer_pre_checkout_query(
+                query.id, ok=False, error_message="Сумма не совпадает."
+            )
+            return
+        await bot.answer_pre_checkout_query(query.id, ok=True)
+
+    @router.message(F.content_type == ContentType.SUCCESSFUL_PAYMENT)
+    async def successful_payment_handler(message: Message) -> None:
+        if message.from_user is None or message.successful_payment is None:
+            return
+        payment = message.successful_payment
+        payload = str(payment.invoice_payload or "")
+        if payload != INVOICE_PAYLOAD_COURSE:
+            return
+        provider_charge_id = getattr(payment, "provider_payment_charge_id", None)
+        inserted = await database.record_payment(
+            telegram_id=message.from_user.id,
+            currency=str(payment.currency or "RUB"),
+            total_amount=int(payment.total_amount),
+            invoice_payload=payload,
+            telegram_payment_charge_id=str(payment.telegram_payment_charge_id),
+            provider_payment_charge_id=(
+                str(provider_charge_id) if provider_charge_id else None
+            ),
+        )
+        if inserted:
+            await grant_paid_access(
+                message.bot, settings, database, message.from_user.id
+            )
+        elif await database.is_purchased(message.from_user.id):
+            if await database.needs_access_delivery(message.from_user.id):
+                await grant_paid_access(
+                    message.bot, settings, database, message.from_user.id
+                )
 
     async def complete_payment(bot: Bot, telegram_id: int) -> None:
         await grant_paid_access(bot, settings, database, telegram_id)
 
     @router.callback_query(F.data == "payment:demo_success")
     async def demo_payment(callback: CallbackQuery) -> None:
-        if settings.payment_url:
+        if settings.payment_provider_token or settings.payment_url:
             await callback.answer("Тестовая оплата отключена", show_alert=True)
             return
         await callback.answer()
@@ -1618,7 +1794,10 @@ async def main() -> None:
     )
     webhook_runner = await start_payment_webhook(bot, settings, database)
     try:
-        await dispatcher.start_polling(bot)
+        await dispatcher.start_polling(
+            bot,
+            allowed_updates=dispatcher.resolve_used_update_types(),
+        )
     finally:
         reminder_task.cancel()
         await asyncio.gather(reminder_task, return_exceptions=True)

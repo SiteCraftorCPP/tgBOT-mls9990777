@@ -14,10 +14,12 @@ from aiohttp import ClientSession
 from bot import (
     Database,
     FUNNEL_EVENTS,
+    INVOICE_PAYLOAD_COURSE,
     REMINDERS,
     SEGMENT_EVENTS,
     STEPS,
     Settings,
+    build_yookassa_provider_data,
     find_step_image,
     format_funnel_metrics,
     normalize_telegram_proxy,
@@ -44,6 +46,10 @@ def settings(
         database_path=image_dir / "unused.sqlite3",
         image_dir=image_dir,
         payment_url="",
+        payment_provider_token="",
+        course_price_kopecks=199000,
+        yookassa_tax_system_code=2,
+        yookassa_vat_code=1,
         course_url="https://t.me/example_course",
         admin_ids=frozenset(),
         reminder_delays=reminder_delays
@@ -98,6 +104,62 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             payment_url_for_user("https://pay.example/order?product=1", 42),
             "https://pay.example/order?product=1&telegram_id=42",
         )
+
+    def test_yookassa_provider_data_contains_receipt(self) -> None:
+        current_settings = settings(Path("."))
+        payload = build_yookassa_provider_data(
+            current_settings, 199000, "Доступ к курсу"
+        )
+        self.assertIsNotNone(payload)
+        self.assertIn("receipt", payload)
+        self.assertIn("199", payload)
+
+    def test_yookassa_provider_data_disabled_without_tax_code(self) -> None:
+        current_settings = Settings(
+            bot_token="test",
+            database_path=Path("unused.sqlite3"),
+            image_dir=Path("."),
+            payment_url="",
+            payment_provider_token="",
+            course_price_kopecks=199000,
+            yookassa_tax_system_code=0,
+            yookassa_vat_code=1,
+            course_url="https://t.me/example_course",
+            admin_ids=frozenset(),
+            reminder_delays=(timedelta(hours=3), timedelta(hours=24), timedelta(hours=48)),
+            payment_webhook_secret="",
+            payment_webhook_host="127.0.0.1",
+            payment_webhook_port=8080,
+            telegram_proxy="",
+        )
+        self.assertIsNone(
+            build_yookassa_provider_data(current_settings, 199000, "Доступ")
+        )
+
+    async def test_record_payment_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Database(Path(temp_dir) / "test.sqlite3")
+            await database.initialize()
+            user = SimpleNamespace(id=42, username="test", full_name="Test User")
+            await database.start_user(SimpleNamespace(from_user=user))
+            first = await database.record_payment(
+                42,
+                "RUB",
+                199000,
+                INVOICE_PAYLOAD_COURSE,
+                "tg_charge_1",
+                "yk_charge_1",
+            )
+            second = await database.record_payment(
+                42,
+                "RUB",
+                199000,
+                INVOICE_PAYLOAD_COURSE,
+                "tg_charge_1",
+                "yk_charge_1",
+            )
+            self.assertTrue(first)
+            self.assertFalse(second)
 
     async def test_every_step_follows_tz_message_order_without_images(
         self,
