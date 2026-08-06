@@ -1084,8 +1084,6 @@ async def send_step(bot: Bot, chat_id: int, settings: Settings, step: int) -> No
         return
 
     card, after, button_text, callback_data = STEPS[step]
-    if step == 10:
-        after = f"{after}\n\nСсылка на канал:\n{settings.course_url}"
     markup = build_step_markup(step, settings, chat_id, button_text, callback_data)
     await send_step_card(bot, chat_id, settings, step, card)
     await bot.send_message(chat_id, after, reply_markup=markup)
