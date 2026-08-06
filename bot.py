@@ -862,10 +862,12 @@ REMINDERS = (
 
 
 INVOICE_PAYLOAD_COURSE = "course_access_v1"
-INVOICE_TITLE = (
-    "Курс «Почему красивые и стильные женщины часто остаются без семьи?»"
+TELEGRAM_INVOICE_TITLE_LIMIT = 32
+INVOICE_TITLE = "Доступ к курсу"
+INVOICE_DESCRIPTION = (
+    "Курс «Почему красивые и стильные женщины часто остаются без семьи?»\n"
+    "Доступ ко всем урокам сразу после оплаты."
 )
-INVOICE_DESCRIPTION = "Доступ ко всем урокам курса сразу после оплаты."
 INVOICE_PRICE_LABEL = "Доступ к курсу"
 RECEIPT_ITEM_DESCRIPTION = "Доступ к онлайн-курсу"
 
@@ -924,8 +926,8 @@ async def send_course_invoice(
     amount = settings.course_price_kopecks
     await bot.send_invoice(
         chat_id=chat_id,
-        title=INVOICE_TITLE,
-        description=INVOICE_DESCRIPTION,
+        title=truncate_text(INVOICE_TITLE, TELEGRAM_INVOICE_TITLE_LIMIT),
+        description=truncate_text(INVOICE_DESCRIPTION, 255),
         payload=INVOICE_PAYLOAD_COURSE,
         provider_token=settings.payment_provider_token,
         currency="RUB",
