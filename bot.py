@@ -1790,6 +1790,13 @@ async def main() -> None:
     database = Database(settings.database_path)
     await database.initialize()
 
+    if settings.payment_provider_token:
+        logging.info("Оплата: ЮKassa provider token задан")
+    else:
+        logging.warning(
+            "PAYMENT_PROVIDER_TOKEN не задан — кнопка оплаты покажет заглушку"
+        )
+
     bot = create_bot(settings)
     dispatcher = Dispatcher()
     dispatcher.include_router(create_router(settings, database))
