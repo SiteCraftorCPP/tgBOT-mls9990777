@@ -674,7 +674,7 @@ class Database:
 STEP_IMAGE_MAP: dict[int, int] = {
     1: 1,
     2: 3,
-    3: 9,
+    3: 7,
     4: 10,
 }
 FUNNEL_LAST_STEP = 3
@@ -683,17 +683,28 @@ SUCCESS_STEP = 4
 
 STEPS: dict[int, tuple[str, str, str, str]] = {
     1: (
-        "Юля, коуч. Почему при внимании мужчин не складывается семья — "
-        "разберём твой сценарий.",
+        "Здравствуйте, меня зовут Юля.\n\n"
+        "Я — коуч. Не психолог, а именно коуч, который помогает женщинам "
+        "лучше понять себя, отношения и свои сценарии.\n\n"
+        "Здесь я мягко и честно помогу тебе посмотреть на свою жизнь глубже.",
         "Поехали?",
         "Дальше",
         "step:2",
     ),
     2: ("", "", "", "step:2"),
     3: (
-        "Курс о твоём сценарии выбора.\n\n"
-        "{price} — доступ сразу после оплаты.",
-        "Готова начать?",
+        "Всё, что нужно, чтобы начать менять свой сценарий отношений.\n\n"
+        "Внутри курса:\n"
+        "— короткие видеоуроки;\n"
+        "— понятные разборы без лишней воды;\n"
+        "— вопросы для самостоятельной работы;\n"
+        "— доступ сразу после оплаты;\n"
+        "— прохождение в своём темпе.\n\n"
+        "Стоимость — {price}.\n\n"
+        "Ты получаешь не просто информацию.\n"
+        "Ты начинаешь лучше понимать, кого выбираешь, почему остаёшься "
+        "в неопределённости и что можешь изменить уже сейчас.",
+        "",
         "Оплатить",
         "payment:start",
     ),
@@ -706,11 +717,14 @@ STEPS: dict[int, tuple[str, str, str, str]] = {
 }
 
 STEP_2_CARD = (
-    "Узнаёшь себя?\n"
-    "— нет серьёзных шагов\n"
-    "— неопределённость\n"
-    "— ждёшь изменений\n"
-    "— устала тянуть сама"
+    "Возможно, ты узнаешь себя.\n"
+    "Мужчины проявляют интерес, но не делают серьёзных шагов.\n"
+    "Отношения начинаются ярко, а потом остаётся неопределённость.\n"
+    "Ты долго ждёшь, что мужчина изменится.\n"
+    "Снаружи ты сильная, а внутри устала всё тянуть на себе.\n\n"
+    "Если откликнулся хотя бы один пункт — дело не в невезении.\n"
+    "Чаще всего это повторяющийся сценарий, который можно увидеть и изменить.\n\n"
+    "Что ближе?"
 )
 
 SEGMENTS = {
@@ -724,14 +738,11 @@ FUNNEL_EVENTS = (
     "Запустил бота",
     "Прошёл знакомство",
     "Узнал себя",
-    "Посмотрел презентацию курса",
-    "Увидел цену",
+    "Увидел курс",
     "Перешёл к оплате",
     "Оплата не завершена",
     "Купил курс",
     "Получил доступ",
-    "Начал уроки",
-    "Прошёл курс",
 )
 
 SEGMENT_EVENTS = tuple(SEGMENTS.values())
@@ -739,7 +750,7 @@ ADMIN_PAGE_SIZE = 6
 
 STATUS_BY_STEP = {
     2: "Прошёл знакомство",
-    3: "Увидел цену",
+    3: "Увидел курс",
 }
 
 REMINDERS = (
@@ -893,18 +904,21 @@ async def send_step_card(
     settings: Settings,
     step: int,
     card: str,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     image_path = find_step_image(settings, step)
     if image_path is None:
         logging.warning(
             "Фото для шага %s не найдено в %s", step, settings.image_dir
         )
-        await bot.send_message(chat_id, card)
+        await bot.send_message(chat_id, card, reply_markup=reply_markup)
         return
     await bot.send_photo(
         chat_id,
         FSInputFile(image_path),
         caption=truncate_text(card, TELEGRAM_CAPTION_LIMIT),
+        reply_markup=reply_markup,
     )
     logging.info("Отправлено фото шага %s: %s", step, image_path.name)
 
@@ -999,23 +1013,23 @@ async def send_step(
                 ],
             ]
         )
-        await send_step_card(bot, chat_id, settings, step, STEP_2_CARD)
-        await bot.send_message(chat_id, "Что ближе?", reply_markup=answers)
+        await send_step_card(
+            bot, chat_id, settings, step, STEP_2_CARD, reply_markup=answers
+        )
         return
 
     card, after, button_text, callback_data = STEPS[step]
     price_label = format_price_rub(settings.course_price_kopecks)
     if step == FUNNEL_LAST_STEP:
         card = card.format(price=price_label)
+    caption = f"{card}\n\n{after}".strip() if after.strip() else card
     purchased = await database.is_purchased(chat_id)
     markup = build_step_markup(
         step, settings, chat_id, button_text, callback_data, purchased=purchased
     )
-    await send_step_card(bot, chat_id, settings, step, card)
-    if after.strip():
-        await bot.send_message(chat_id, after, reply_markup=markup)
-    else:
-        await bot.send_message(chat_id, "👇", reply_markup=markup)
+    await send_step_card(
+        bot, chat_id, settings, step, caption, reply_markup=markup
+    )
 
 
 async def grant_paid_access(
@@ -1346,8 +1360,6 @@ def create_router(settings: Settings, database: Database) -> Router:
         status = STATUS_BY_STEP.get(step)
         if status:
             await database.set_status(callback.from_user.id, status)
-        if step == FUNNEL_LAST_STEP:
-            await database.start_payment(callback.from_user.id)
         await send_step(callback.bot, callback.from_user.id, settings, step, database)
 
     @router.callback_query(F.data.startswith("segment:"))
@@ -1361,9 +1373,9 @@ def create_router(settings: Settings, database: Database) -> Router:
             return
         await database.set_segment(callback.from_user.id, segment)
         await callback.answer()
-        await callback.message.answer(
-            "Спасибо за ответ 🤍",
-            reply_markup=keyboard("Продолжить", "step:3"),
+        await database.set_status(callback.from_user.id, "Увидел курс")
+        await send_step(
+            callback.bot, callback.from_user.id, settings, 3, database
         )
 
     @router.callback_query(F.data == "question:start")

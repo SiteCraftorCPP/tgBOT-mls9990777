@@ -186,10 +186,9 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
                 await send_step(bot, 1, current_settings, step, database)
 
             self.assertEqual(len(bot.photos), 0)
-            self.assertEqual(len(bot.messages), 8)
+            self.assertEqual(len(bot.messages), 4)
             card, after, _, _ = STEPS[1]
-            self.assertEqual(bot.messages[0][1], card)
-            self.assertEqual(bot.messages[1][1], after)
+            self.assertEqual(bot.messages[0][1], f"{card}\n\n{after}")
 
     async def test_step_with_image_follows_tz_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -208,10 +207,11 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
 
             await send_step(bot, 1, settings(image_dir), 1, database)
 
+            card, after, _, _ = STEPS[1]
             self.assertEqual(len(bot.photos), 1)
-            self.assertEqual(bot.photos[0][2], card)
-            self.assertEqual(len(bot.messages), 1)
-            self.assertIsNotNone(bot.messages[0][2])
+            self.assertEqual(bot.photos[0][2], f"{card}\n\n{after}")
+            self.assertIsNotNone(bot.photos[0][3])
+            self.assertEqual(len(bot.messages), 0)
 
     async def test_project_images_map_to_all_steps(self) -> None:
         image_dir = Path(__file__).resolve().parent / "images"
@@ -240,9 +240,9 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             await send_step(bot, 1, settings(image_dir), 1, database)
 
             self.assertEqual(len(bot.photos), 0)
-            self.assertEqual(len(bot.messages), 2)
-            card, _, _, _ = STEPS[1]
-            self.assertEqual(bot.messages[0][1], card)
+            self.assertEqual(len(bot.messages), 1)
+            card, after, _, _ = STEPS[1]
+            self.assertEqual(bot.messages[0][1], f"{card}\n\n{after}")
 
     async def test_payment_is_idempotent_and_unknown_grant_is_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -328,7 +328,7 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
                     await runner.cleanup()
 
             self.assertTrue(await database.is_purchased(42))
-            self.assertEqual(len(bot.messages), 2)
+            self.assertEqual(len(bot.messages), 1)
 
     async def test_admin_metrics_track_funnel_and_segments(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
