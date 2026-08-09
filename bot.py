@@ -761,7 +761,7 @@ STEPS: dict[int, tuple[str, str, str, str]] = {
         "— понятные разборы без лишней воды;\n"
         "— вопросы для самостоятельной работы;\n"
         "— доступ сразу после оплаты;\n— прохождение в своём темпе.\n\n"
-        "Стоимость — 1 990 ₽.\n\nТы получаешь не просто информацию.\n"
+        "Стоимость — {price}.\n\nТы получаешь не просто информацию.\n"
         "Ты начинаешь лучше понимать, кого выбираешь, почему остаёшься в "
         "неопределённости и что можешь изменить уже сейчас.",
         "Доступ к материалам открывается сразу после оплаты.\n\n"
@@ -849,7 +849,7 @@ REMINDERS = (
         "когда наконец выберут тебя?\n\nМежду этими позициями огромная разница.\n\n"
         "В курсе мы разберём, как выйти из ожидания и начать принимать решения "
         "из уважения к себе.",
-        "Получить доступ за 1 990 ₽",
+        "Получить доступ за {price}",
     ),
     (
         "Можно встретить другого мужчину, но снова построить те же отношения.\n\n"
@@ -1107,6 +1107,9 @@ async def send_step(
         return
 
     card, after, button_text, callback_data = STEPS[step]
+    price_label = format_price_rub(settings.course_price_kopecks)
+    if step == 8:
+        card = card.format(price=price_label)
     purchased = await database.is_purchased(chat_id)
     markup = build_step_markup(
         step, settings, chat_id, button_text, callback_data, purchased=purchased
@@ -1754,10 +1757,9 @@ async def process_payment_reminders(
                 await database.release_reminder(telegram_id, sent + 1)
                 continue
             text, button_text = REMINDERS[sent]
-            if sent == 1:
-                button_text = (
-                    f"Получить доступ за "
-                    f"{format_price_rub(settings.course_price_kopecks)}"
+            if "{price}" in button_text:
+                button_text = button_text.format(
+                    price=format_price_rub(settings.course_price_kopecks)
                 )
             target_step = 8 if sent == 0 else 9
             await bot.send_message(

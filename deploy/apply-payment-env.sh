@@ -17,8 +17,8 @@ set_var() {
 }
 
 set_var PAYMENT_PROVIDER_TOKEN "390540012:LIVE:100585"
-set_var COURSE_URL "https://t.me/+JARHvPSqchhjZjBi"
-set_var COURSE_PRICE_KOPECKS "199000"
+set_var COURSE_URL "https://t.me/+0tTS-z-oXqo3NWIy"
+set_var COURSE_PRICE_KOPECKS "10000"
 
 echo "OK:"
 grep -E '^(PAYMENT_PROVIDER_TOKEN|COURSE_URL|COURSE_PRICE_KOPECKS)=' "${ENV_FILE}"

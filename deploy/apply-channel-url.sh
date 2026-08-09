@@ -3,7 +3,7 @@
 #   bash deploy/apply-channel-url.sh
 set -euo pipefail
 
-CHANNEL_URL="${1:-https://t.me/+JARHvPSqchhjZjBi}"
+CHANNEL_URL="${1:-https://t.me/+0tTS-z-oXqo3NWIy}"
 BOT_ENV="/var/www/tgbot-mls9990777/.env"
 SITE_ENV="/opt/projects/sait-mls9990777/.env"
 
