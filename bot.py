@@ -674,50 +674,32 @@ class Database:
 STEP_IMAGE_MAP: dict[int, int] = {
     1: 1,
     2: 3,
-    3: 5,
-    4: 7,
-    5: 9,
-    6: 10,
+    3: 9,
+    4: 10,
 }
-FUNNEL_LAST_STEP = 5
-SUCCESS_STEP = 6
+FUNNEL_LAST_STEP = 3
+SUCCESS_STEP = 4
 
 
 STEPS: dict[int, tuple[str, str, str, str]] = {
     1: (
-        "Я Юля — коуч по отношениям.\n\n"
-        "Разберём, почему при внимании мужчин не складывается семья — "
-        "и что менять в своём выборе.",
-        "Не про «быть удобнее». Про честный взгляд на свой сценарий.",
+        "Юля, коуч. Почему при внимании мужчин не складывается семья — "
+        "разберём твой сценарий.",
+        "Поехали?",
         "Дальше",
         "step:2",
     ),
     2: ("", "", "", "step:2"),
     3: (
-        "Внимание — не то же самое, что намерение.\n\n"
-        "Часто выбираем надежду, а не человека. Курс учит видеть это раньше.",
-        "Дальше — о курсе.",
-        "О курсе",
-        "step:4",
-    ),
-    4: (
-        "Курс «Почему красивые женщины остаются без семьи?»\n\n"
-        "Короткие уроки, разборы и вопросы для себя — без воды.",
-        "Коучинговая подготовка, 15 лет брака, личный опыт.",
-        "Стоимость",
-        "step:5",
-    ),
-    5: (
-        "Стоимость — {price}.\n\n"
-        "Доступ сразу после оплаты. Уроки в своём темпе.",
+        "Курс о твоём сценарии выбора.\n\n"
+        "{price} — доступ сразу после оплаты.",
         "Готова начать?",
         "Оплатить",
         "payment:start",
     ),
-    6: (
-        "Оплата прошла успешно 🤍 Ты внутри.\n\n"
-        "Начинай с первого урока.",
-        "Доступ открыт.",
+    4: (
+        "Оплата прошла успешно 🤍\n\nНачинай с первого урока.",
+        "",
         "Перейти к урокам",
         "course:open",
     ),
@@ -725,10 +707,10 @@ STEPS: dict[int, tuple[str, str, str, str]] = {
 
 STEP_2_CARD = (
     "Узнаёшь себя?\n"
-    "— интерес есть, серьёзных шагов нет\n"
-    "— ярко, потом неопределённость\n"
-    "— ждёшь, что он изменится\n"
-    "— сильная снаружи, устала внутри"
+    "— нет серьёзных шагов\n"
+    "— неопределённость\n"
+    "— ждёшь изменений\n"
+    "— устала тянуть сама"
 )
 
 SEGMENTS = {
@@ -757,25 +739,21 @@ ADMIN_PAGE_SIZE = 6
 
 STATUS_BY_STEP = {
     2: "Прошёл знакомство",
-    4: "Посмотрел презентацию курса",
-    5: "Увидел цену",
+    3: "Увидел цену",
 }
 
 REMINDERS = (
     (
-        "Доступ к курсу ещё открыт. Один честный взгляд на себя может многое "
-        "изменить.",
-        "Вернуться к курсу",
+        "Курс ещё доступен — один честный взгляд на себя многое меняет.",
+        "Вернуться",
     ),
     (
-        "Ты выбираешь мужчину — или ждёшь, когда выберут тебя? В курсе разберём "
-        "это честно.",
+        "Ты выбираешь — или ждёшь, когда выберут тебя?",
         "Получить доступ за {price}",
     ),
     (
-        "Пока не увидишь свой сценарий — он будет повторяться. Курс поможет "
-        "это увидеть.",
-        "Оплатить и начать",
+        "Пока сценарий не виден — он повторяется.",
+        "Оплатить",
     ),
 )
 
@@ -940,23 +918,7 @@ def build_step_markup(
     *,
     purchased: bool = False,
 ) -> InlineKeyboardMarkup:
-    if step == 4:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=f"Получить доступ за {format_price_rub(settings.course_price_kopecks)}",
-                        callback_data="step:5",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="У меня остался вопрос", callback_data="question:start"
-                    )
-                ],
-            ]
-        )
-    if step == 5:
+    if step == FUNNEL_LAST_STEP:
         if purchased:
             return InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -968,9 +930,24 @@ def build_step_markup(
                     ]
                 ]
             )
-        return keyboard(
-            f"Оплатить {format_price_rub(settings.course_price_kopecks)}",
-            "payment:start",
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=(
+                            f"Оплатить "
+                            f"{format_price_rub(settings.course_price_kopecks)}"
+                        ),
+                        callback_data="payment:start",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="У меня остался вопрос",
+                        callback_data="question:start",
+                    )
+                ],
+            ]
         )
     if step == SUCCESS_STEP:
         return InlineKeyboardMarkup(
@@ -1035,7 +1012,10 @@ async def send_step(
         step, settings, chat_id, button_text, callback_data, purchased=purchased
     )
     await send_step_card(bot, chat_id, settings, step, card)
-    await bot.send_message(chat_id, after, reply_markup=markup)
+    if after.strip():
+        await bot.send_message(chat_id, after, reply_markup=markup)
+    else:
+        await bot.send_message(chat_id, "👇", reply_markup=markup)
 
 
 async def grant_paid_access(
@@ -1180,8 +1160,7 @@ def create_router(settings: Settings, database: Database) -> Router:
         await database.start_user(message)
         admin = bool(message.from_user and is_admin(message.from_user.id))
         await message.answer(
-            "Здравствуй 🤍 Разберём, почему при внимании мужчин сложно прийти "
-            "к семье.\n\nНачнём?",
+            "Здравствуй 🤍 Почему при внимании мужчин сложно прийти к семье — разберём.",
             reply_markup=start_keyboard(admin),
         )
 
@@ -1679,7 +1658,7 @@ async def process_payment_reminders(
                 button_text = button_text.format(
                     price=format_price_rub(settings.course_price_kopecks)
                 )
-            target_step = 4 if sent == 0 else FUNNEL_LAST_STEP
+            target_step = FUNNEL_LAST_STEP
             await bot.send_message(
                 telegram_id,
                 text,

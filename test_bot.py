@@ -182,11 +182,11 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
                     from_user=SimpleNamespace(id=1, username="u", full_name="U")
                 )
             )
-            for step in range(1, 7):
+            for step in range(1, 5):
                 await send_step(bot, 1, current_settings, step, database)
 
             self.assertEqual(len(bot.photos), 0)
-            self.assertEqual(len(bot.messages), 12)
+            self.assertEqual(len(bot.messages), 8)
             card, after, _, _ = STEPS[1]
             self.assertEqual(bot.messages[0][1], card)
             self.assertEqual(bot.messages[1][1], after)
@@ -423,7 +423,7 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bot.messages[0][1], REMINDERS[0][0])
             self.assertEqual(
                 bot.messages[0][2].inline_keyboard[0][0].callback_data,
-                "step:4",
+                "step:3",
             )
             row = (await database.payment_candidates())[0]
             self.assertEqual(int(row["reminders_sent"]), 1)
@@ -442,7 +442,7 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sent, 1)
             self.assertEqual(
                 bot.messages[1][2].inline_keyboard[0][0].callback_data,
-                "step:5",
+                "step:3",
             )
 
             async with database.connect() as connection:
