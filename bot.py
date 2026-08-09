@@ -40,6 +40,8 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
+DEFAULT_COURSE_URL = "https://t.me/+0tTS-z-oXqo3NWIy"
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -98,7 +100,7 @@ class Settings:
                 os.getenv("YOOKASSA_TAX_SYSTEM_CODE", "0") or "0"
             ),
             yookassa_vat_code=int(os.getenv("YOOKASSA_VAT_CODE", "1") or "1"),
-            course_url=os.getenv("COURSE_URL", "https://t.me/example_course").strip(),
+            course_url=os.getenv("COURSE_URL", DEFAULT_COURSE_URL).strip(),
             admin_ids=admin_ids,
             reminder_delays=tuple(timedelta(hours=value) for value in delay_values),
             payment_webhook_secret=os.getenv("PAYMENT_WEBHOOK_SECRET", "").strip(),
@@ -513,22 +515,32 @@ class Database:
                 excluded_ids,
             )
             total_users = int((await cursor.fetchone())["count"])
+            tracked_events = tuple(
+                dict.fromkeys(
+                    funnel_events + tuple(LEGACY_FUNNEL_EVENT_ALIASES.keys())
+                )
+            )
             cursor = await connection.execute(
                 """
-                SELECT event, COUNT(DISTINCT telegram_id) AS count
+                SELECT DISTINCT telegram_id, event
                 FROM events
                 WHERE event IN ({})
                 {}
-                GROUP BY event
                 """.format(
-                    ",".join("?" for _ in funnel_events),
-                    excluded_sql,
+                    ",".join("?" for _ in tracked_events),
+                    excluded_sql.replace("telegram_id", "events.telegram_id"),
                 ),
-                funnel_events + excluded_ids,
+                tracked_events + excluded_ids,
             )
+            funnel_sets: dict[str, set[int]] = {
+                event: set() for event in funnel_events
+            }
+            for row in await cursor.fetchall():
+                canonical = canonical_funnel_event(str(row["event"]))
+                if canonical in funnel_sets:
+                    funnel_sets[canonical].add(int(row["telegram_id"]))
             funnel = {
-                str(row["event"]): int(row["count"])
-                for row in await cursor.fetchall()
+                event: len(users) for event, users in funnel_sets.items()
             }
             cursor = await connection.execute(
                 """
@@ -744,6 +756,28 @@ FUNNEL_EVENTS = (
     "Купил курс",
     "Получил доступ",
 )
+
+LEGACY_FUNNEL_EVENT_ALIASES: dict[str, str] = {
+    "Посмотрел презентацию курса": "Увидел курс",
+    "Увидел цену": "Увидел курс",
+}
+
+FUNNEL_EVENT_LABELS: dict[str, str] = {
+    "Запустил бота": "Старт",
+    "Прошёл знакомство": "Шаг 1",
+    "Узнал себя": "Шаг 2",
+    "Увидел курс": "Шаг 3",
+    "Перешёл к оплате": "Оплата",
+    "Оплата не завершена": "Напоминания",
+    "Купил курс": "Покупка",
+    "Получил доступ": "Доступ",
+}
+
+
+def canonical_funnel_event(event: str) -> str | None:
+    if event in FUNNEL_EVENTS:
+        return event
+    return LEGACY_FUNNEL_EVENT_ALIASES.get(event)
 
 SEGMENT_EVENTS = tuple(SEGMENTS.values())
 ADMIN_PAGE_SIZE = 6
@@ -1067,7 +1101,11 @@ def format_funnel_metrics(metrics: dict[str, object]) -> str:
     funnel = metrics["funnel"]
     segments = metrics["segments"]
     funnel_lines = [
-        f"{event}: {funnel.get(event, 0)}" for event in FUNNEL_EVENTS
+        (
+            f"{FUNNEL_EVENT_LABELS.get(event, event)} — {event}: "
+            f"{funnel.get(event, 0)}"
+        )
+        for event in FUNNEL_EVENTS
     ]
     segment_lines = [
         f"{segment}: {segments.get(segment, 0)}" for segment in SEGMENT_EVENTS

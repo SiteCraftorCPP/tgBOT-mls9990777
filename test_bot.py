@@ -358,6 +358,9 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(metrics["segments"]["Неопределённость"], 1)
             self.assertNotIn("purchased", metrics)
             text = format_funnel_metrics(metrics)
+            self.assertIn("Шаг 3 — Увидел курс", text)
+            self.assertNotIn("Посмотрел презентацию", text)
+            self.assertNotIn("Увидел цену", text)
             self.assertNotIn("Конверсия", text)
             self.assertNotIn("вопрос", text.lower())
 
@@ -367,6 +370,24 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             details = await database.admin_user(42)
             self.assertIsNotNone(details)
             self.assertNotIn("pending_questions", details)
+
+    async def test_admin_metrics_merge_legacy_funnel_events(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Database(Path(temp_dir) / "test.sqlite3")
+            await database.initialize()
+            user = SimpleNamespace(id=42, username="test", full_name="Test User")
+            other = SimpleNamespace(id=43, username="u2", full_name="User 2")
+            await database.start_user(SimpleNamespace(from_user=user))
+            await database.start_user(SimpleNamespace(from_user=other))
+            await database.set_status(42, "Посмотрел презентацию курса")
+            await database.set_status(43, "Увидел цену")
+
+            metrics = await database.admin_metrics(
+                FUNNEL_EVENTS,
+                SEGMENT_EVENTS,
+                (),
+            )
+            self.assertEqual(metrics["funnel"]["Увидел курс"], 2)
 
     async def test_reminder_waits_until_delay(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
