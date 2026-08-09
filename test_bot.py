@@ -18,6 +18,7 @@ from bot import (
     REMINDERS,
     SEGMENT_EVENTS,
     STEPS,
+    STEP_IMAGE_MAP,
     Settings,
     build_yookassa_provider_data,
     find_step_image,
@@ -181,11 +182,11 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
                     from_user=SimpleNamespace(id=1, username="u", full_name="U")
                 )
             )
-            for step in range(1, 11):
+            for step in range(1, 7):
                 await send_step(bot, 1, current_settings, step, database)
 
             self.assertEqual(len(bot.photos), 0)
-            self.assertEqual(len(bot.messages), 20)
+            self.assertEqual(len(bot.messages), 12)
             card, after, _, _ = STEPS[1]
             self.assertEqual(bot.messages[0][1], card)
             self.assertEqual(bot.messages[1][1], after)
@@ -217,10 +218,10 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
         if not image_dir.is_dir():
             self.skipTest("images folder missing")
         current_settings = settings(image_dir)
-        for step in range(1, 11):
+        for step, image_num in STEP_IMAGE_MAP.items():
             path = find_step_image(current_settings, step)
-            self.assertIsNotNone(path, f"step {step}")
-            self.assertEqual(int(re.findall(r"\d+", path.stem)[-1]), step)
+            self.assertIsNotNone(path, f"step {step} -> image {image_num}")
+            self.assertEqual(int(re.findall(r"\d+", path.stem)[-1]), image_num)
 
     async def test_sparse_images_are_not_assigned_to_wrong_steps(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -422,7 +423,7 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bot.messages[0][1], REMINDERS[0][0])
             self.assertEqual(
                 bot.messages[0][2].inline_keyboard[0][0].callback_data,
-                "step:8",
+                "step:4",
             )
             row = (await database.payment_candidates())[0]
             self.assertEqual(int(row["reminders_sent"]), 1)
@@ -441,7 +442,7 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sent, 1)
             self.assertEqual(
                 bot.messages[1][2].inline_keyboard[0][0].callback_data,
-                "step:9",
+                "step:5",
             )
 
             async with database.connect() as connection:
