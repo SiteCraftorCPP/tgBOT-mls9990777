@@ -44,7 +44,9 @@ DEFAULT_COURSE_URL = "https://t.me/+0tTS-z-oXqo3NWIy"
 DEFAULT_SUPPORT_CHAT_ID = -1004479297213
 QUESTION_STATUSES = frozenset({"Ожидает вопрос", "Вопрос отправлен"})
 SUPPORT_TOPIC_NAME_LIMIT = 128
+GENERAL_FORUM_TOPIC_ID = 1
 _support_topic_locks: dict[int, asyncio.Lock] = {}
+_support_topic_permission_warned = False
 
 
 @dataclass(frozen=True)
@@ -1308,6 +1310,61 @@ def support_topic_lock(telegram_id: int) -> asyncio.Lock:
     return lock
 
 
+def is_topic_permission_error(error: TelegramBadRequest) -> bool:
+    message = str(error).casefold()
+    return (
+        "not enough rights" in message
+        or "create a topic" in message
+        or "manage topics" in message
+    )
+
+
+async def notify_support_topic_permission_issue(
+    bot: Bot, settings: Settings
+) -> None:
+    global _support_topic_permission_warned
+    if _support_topic_permission_warned or not settings.admin_ids:
+        return
+    _support_topic_permission_warned = True
+    text = (
+        "⚠️ Бот не может создать темы в чате поддержки.\n\n"
+        "Откройте чат → участники → бот → права администратора → "
+        "включите «Управление темами».\n\n"
+        f"Chat ID: {settings.support_chat_id}\n"
+        "Пока права не выданы, сообщения падают в общую тему."
+    )
+    for admin_id in settings.admin_ids:
+        try:
+            await bot.send_message(admin_id, text)
+        except Exception:
+            logging.exception(
+                "Не удалось уведомить админа %s о правах в чате поддержки",
+                admin_id,
+            )
+
+
+def format_support_message_body(
+    telegram_id: int,
+    full_name: str,
+    username: str | None,
+    text: str,
+    *,
+    shared_topic: bool,
+) -> str:
+    if shared_topic:
+        return (
+            f"📩 {full_name}\n"
+            f"ID: {telegram_id}\n"
+            f"Username: @{username or '—'}\n\n"
+            f"💬 Сообщение:\n\n{text}"
+        )
+    return f"💬 Сообщение:\n\n{text}"
+
+
+def expected_support_thread_id(thread_id: int | None) -> int:
+    return thread_id if thread_id is not None else GENERAL_FORUM_TOPIC_ID
+
+
 async def ensure_support_thread(
     bot: Bot,
     settings: Settings,
@@ -1337,6 +1394,14 @@ async def ensure_support_thread(
                 topic_name,
             )
         except TelegramBadRequest as error:
+            if is_topic_permission_error(error):
+                logging.error(
+                    "Нет прав на создание тем для пользователя %s: %s",
+                    telegram_id,
+                    error,
+                )
+                await notify_support_topic_permission_issue(bot, settings)
+                return GENERAL_FORUM_TOPIC_ID
             logging.exception(
                 "Не удалось создать тему для пользователя %s: %s",
                 telegram_id,
@@ -1391,7 +1456,17 @@ async def forward_question_to_support(
     if thread_id is None:
         return False
 
-    body = f"💬 Сообщение:\n\n{text}"
+    persisted_thread = await database.get_support_thread_id(telegram_id)
+    shared_topic = (
+        thread_id == GENERAL_FORUM_TOPIC_ID and persisted_thread is None
+    )
+    body = format_support_message_body(
+        telegram_id,
+        full_name,
+        username,
+        text,
+        shared_topic=shared_topic,
+    )
     try:
         await bot.send_message(
             settings.support_chat_id,
@@ -1406,6 +1481,26 @@ async def forward_question_to_support(
             thread_id,
             error,
         )
+        if thread_id != GENERAL_FORUM_TOPIC_ID:
+            try:
+                body = format_support_message_body(
+                    telegram_id,
+                    full_name,
+                    username,
+                    text,
+                    shared_topic=True,
+                )
+                await bot.send_message(
+                    settings.support_chat_id,
+                    body,
+                    message_thread_id=GENERAL_FORUM_TOPIC_ID,
+                    reply_markup=support_reply_keyboard(telegram_id),
+                )
+                return True
+            except TelegramBadRequest:
+                logging.exception(
+                    "Не удалось отправить сообщение в общую тему чата поддержки"
+                )
         return False
 
 
@@ -1671,10 +1766,9 @@ def create_router(settings: Settings, database: Database) -> Router:
             await callback.answer("Некорректный запрос", show_alert=True)
             return
         user_telegram_id = int(parts[2])
-        thread_id = await database.get_support_thread_id(user_telegram_id)
-        if thread_id is None:
-            await callback.answer("Тема пользователя не найдена", show_alert=True)
-            return
+        thread_id = expected_support_thread_id(
+            await database.get_support_thread_id(user_telegram_id)
+        )
         if callback.message.chat.id != settings.support_chat_id:
             await callback.answer("Кнопка только в чате поддержки", show_alert=True)
             return
@@ -1941,9 +2035,6 @@ def create_router(settings: Settings, database: Database) -> Router:
             return
         text = message.text or ""
         await database.save_question(message.from_user.id, text)
-        await message.answer(
-            "Спасибо 🤍 Вопрос передан. Мы обязательно ответим."
-        )
         delivered = await forward_question_to_support(
             message.bot,
             settings,
@@ -1953,6 +2044,15 @@ def create_router(settings: Settings, database: Database) -> Router:
             username=message.from_user.username,
             text=text,
         )
+        if delivered:
+            await message.answer(
+                "Спасибо 🤍 Вопрос передан. Мы обязательно ответим."
+            )
+        else:
+            await message.answer(
+                "Не удалось передать сообщение в поддержку. "
+                "Попробуйте ещё раз через минуту."
+            )
         if not delivered and settings.admin_ids:
             for admin_id in settings.admin_ids:
                 try:
