@@ -23,6 +23,7 @@ from bot import (
     build_yookassa_provider_data,
     find_step_image,
     format_funnel_metrics,
+    format_support_topic_name,
     normalize_telegram_proxy,
     payment_url_for_user,
     process_payment_reminders,
@@ -59,6 +60,7 @@ def settings(
         payment_webhook_host="127.0.0.1",
         payment_webhook_port=webhook_port,
         telegram_proxy="",
+        support_chat_id=0,
     )
 
 
@@ -138,6 +140,7 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             payment_webhook_host="127.0.0.1",
             payment_webhook_port=8080,
             telegram_proxy="",
+            support_chat_id=0,
         )
         self.assertIsNone(
             build_yookassa_provider_data(current_settings, 199000, "Доступ")
@@ -501,6 +504,40 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sent, 0)
             self.assertEqual(len(bot.messages), 0)
             self.assertEqual(len(await database.payment_candidates()), 0)
+
+    def test_format_support_topic_name(self) -> None:
+        self.assertEqual(
+            format_support_topic_name("Анна", "anna", 42),
+            "@anna · 42",
+        )
+        long_name = "А" * 200
+        self.assertLessEqual(
+            len(format_support_topic_name(long_name, None, 99)),
+            128,
+        )
+
+    async def test_support_thread_is_persisted_per_user(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Database(Path(temp_dir) / "test.sqlite3")
+            await database.initialize()
+            user = SimpleNamespace(id=42, username="u", full_name="User")
+            await database.start_user(SimpleNamespace(from_user=user))
+            self.assertIsNone(await database.get_support_thread_id(42))
+            await database.set_support_thread_id(42, 777)
+            self.assertEqual(await database.get_support_thread_id(42), 777)
+            self.assertEqual(await database.get_user_by_support_thread(777), 42)
+
+    async def test_admin_reply_session_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Database(Path(temp_dir) / "test.sqlite3")
+            await database.initialize()
+            await database.set_admin_reply_session(1, 42, 555)
+            session = await database.get_admin_reply_session(1)
+            self.assertIsNotNone(session)
+            self.assertEqual(int(session["user_telegram_id"]), 42)
+            self.assertEqual(int(session["thread_id"]), 555)
+            await database.clear_admin_reply_session(1)
+            self.assertIsNone(await database.get_admin_reply_session(1))
 
 
 if __name__ == "__main__":

@@ -41,6 +41,10 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
 DEFAULT_COURSE_URL = "https://t.me/+0tTS-z-oXqo3NWIy"
+DEFAULT_SUPPORT_CHAT_ID = -1004479297213
+QUESTION_STATUSES = frozenset({"Ожидает вопрос", "Вопрос отправлен"})
+SUPPORT_TOPIC_NAME_LIMIT = 128
+_support_topic_locks: dict[int, asyncio.Lock] = {}
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,7 @@ class Settings:
     payment_webhook_host: str
     payment_webhook_port: int
     telegram_proxy: str
+    support_chat_id: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -108,6 +113,9 @@ class Settings:
             payment_webhook_port=int(os.getenv("PAYMENT_WEBHOOK_PORT", "8080")),
             telegram_proxy=normalize_telegram_proxy(
                 os.getenv("TELEGRAM_PROXY", "").strip()
+            ),
+            support_chat_id=int(
+                os.getenv("SUPPORT_CHAT_ID", str(DEFAULT_SUPPORT_CHAT_ID)) or "0"
             ),
         )
 
@@ -210,6 +218,13 @@ class Database:
                     FOREIGN KEY (telegram_id) REFERENCES users(telegram_id),
                     UNIQUE(telegram_payment_charge_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS admin_reply_sessions (
+                    admin_id INTEGER PRIMARY KEY,
+                    user_telegram_id INTEGER NOT NULL,
+                    thread_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             cursor = await connection.execute("PRAGMA table_info(users)")
@@ -224,6 +239,10 @@ class Database:
                     ALTER TABLE users
                     ADD COLUMN access_sent INTEGER NOT NULL DEFAULT 0
                     """
+                )
+            if "support_thread_id" not in user_columns:
+                await connection.execute(
+                    "ALTER TABLE users ADD COLUMN support_thread_id INTEGER"
                 )
             await connection.execute(
                 "UPDATE users SET reminder_claimed = NULL"
@@ -410,6 +429,94 @@ class Database:
                 WHERE telegram_id = ? AND purchased = 1
                 """,
                 (to_db_time(utc_now()), telegram_id),
+            )
+            await connection.commit()
+
+    async def get_support_thread_id(self, telegram_id: int) -> int | None:
+        async with self.connect() as connection:
+            cursor = await connection.execute(
+                "SELECT support_thread_id FROM users WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None or row["support_thread_id"] is None:
+                return None
+            return int(row["support_thread_id"])
+
+    async def set_support_thread_id(self, telegram_id: int, thread_id: int) -> None:
+        now = to_db_time(utc_now())
+        async with self.connect() as connection:
+            await connection.execute(
+                """
+                UPDATE users
+                SET support_thread_id = ?, updated_at = ?
+                WHERE telegram_id = ?
+                """,
+                (thread_id, now, telegram_id),
+            )
+            await connection.commit()
+
+    async def get_user_by_support_thread(self, thread_id: int) -> int | None:
+        async with self.connect() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT telegram_id
+                FROM users
+                WHERE support_thread_id = ?
+                """,
+                (thread_id,),
+            )
+            row = await cursor.fetchone()
+            return int(row["telegram_id"]) if row else None
+
+    async def set_admin_reply_session(
+        self, admin_id: int, user_telegram_id: int, thread_id: int
+    ) -> None:
+        now = to_db_time(utc_now())
+        async with self.connect() as connection:
+            await connection.execute(
+                """
+                INSERT INTO admin_reply_sessions (
+                    admin_id, user_telegram_id, thread_id, created_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(admin_id) DO UPDATE SET
+                    user_telegram_id = excluded.user_telegram_id,
+                    thread_id = excluded.thread_id,
+                    created_at = excluded.created_at
+                """,
+                (admin_id, user_telegram_id, thread_id, now),
+            )
+            await connection.commit()
+
+    async def get_admin_reply_session(self, admin_id: int) -> aiosqlite.Row | None:
+        async with self.connect() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT admin_id, user_telegram_id, thread_id, created_at
+                FROM admin_reply_sessions
+                WHERE admin_id = ?
+                """,
+                (admin_id,),
+            )
+            return await cursor.fetchone()
+
+    async def clear_admin_reply_session(self, admin_id: int) -> None:
+        async with self.connect() as connection:
+            await connection.execute(
+                "DELETE FROM admin_reply_sessions WHERE admin_id = ?",
+                (admin_id,),
+            )
+            await connection.commit()
+
+    async def mark_questions_answered(self, telegram_id: int) -> None:
+        async with self.connect() as connection:
+            await connection.execute(
+                """
+                UPDATE questions
+                SET answered = 1
+                WHERE telegram_id = ? AND answered IN (0, 2)
+                """,
+                (telegram_id,),
             )
             await connection.commit()
 
@@ -1169,6 +1276,139 @@ def truncate_text(value: object, limit: int) -> str:
     return text if len(text) <= limit else f"{text[: limit - 1]}…"
 
 
+def format_support_topic_name(
+    full_name: str, username: str | None, telegram_id: int
+) -> str:
+    if username:
+        label = f"@{username}"
+    else:
+        label = compact_name(full_name, 60)
+    name = f"{label} · {telegram_id}"
+    return truncate_text(name, SUPPORT_TOPIC_NAME_LIMIT)
+
+
+def support_reply_keyboard(telegram_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Ответить",
+                    callback_data=f"support:reply:{telegram_id}",
+                )
+            ]
+        ]
+    )
+
+
+def support_topic_lock(telegram_id: int) -> asyncio.Lock:
+    lock = _support_topic_locks.get(telegram_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _support_topic_locks[telegram_id] = lock
+    return lock
+
+
+async def ensure_support_thread(
+    bot: Bot,
+    settings: Settings,
+    database: Database,
+    telegram_id: int,
+    *,
+    full_name: str,
+    username: str | None,
+) -> int | None:
+    if not settings.support_chat_id:
+        return None
+
+    existing = await database.get_support_thread_id(telegram_id)
+    if existing is not None:
+        return existing
+
+    lock = support_topic_lock(telegram_id)
+    async with lock:
+        existing = await database.get_support_thread_id(telegram_id)
+        if existing is not None:
+            return existing
+
+        topic_name = format_support_topic_name(full_name, username, telegram_id)
+        try:
+            topic = await bot.create_forum_topic(
+                settings.support_chat_id,
+                topic_name,
+            )
+        except TelegramBadRequest as error:
+            logging.exception(
+                "Не удалось создать тему для пользователя %s: %s",
+                telegram_id,
+                error,
+            )
+            return None
+
+        thread_id = int(topic.message_thread_id)
+        await database.set_support_thread_id(telegram_id, thread_id)
+        intro = (
+            "Новая тема пользователя\n\n"
+            f"ID: {telegram_id}\n"
+            f"Имя: {full_name}\n"
+            f"Username: @{username or '—'}\n\n"
+            "Сообщения пользователя будут появляться здесь. "
+            "Чтобы ответить — нажмите «Ответить» и напишите в этой теме."
+        )
+        try:
+            await bot.send_message(
+                settings.support_chat_id,
+                intro,
+                message_thread_id=thread_id,
+                reply_markup=support_reply_keyboard(telegram_id),
+            )
+        except TelegramBadRequest as error:
+            logging.exception(
+                "Не удалось отправить intro в тему %s: %s",
+                thread_id,
+                error,
+            )
+        return thread_id
+
+
+async def forward_question_to_support(
+    bot: Bot,
+    settings: Settings,
+    database: Database,
+    telegram_id: int,
+    *,
+    full_name: str,
+    username: str | None,
+    text: str,
+) -> bool:
+    thread_id = await ensure_support_thread(
+        bot,
+        settings,
+        database,
+        telegram_id,
+        full_name=full_name,
+        username=username,
+    )
+    if thread_id is None:
+        return False
+
+    body = f"💬 Сообщение:\n\n{text}"
+    try:
+        await bot.send_message(
+            settings.support_chat_id,
+            body,
+            message_thread_id=thread_id,
+            reply_markup=support_reply_keyboard(telegram_id),
+        )
+        return True
+    except TelegramBadRequest as error:
+        logging.exception(
+            "Не удалось отправить сообщение в тему %s: %s",
+            thread_id,
+            error,
+        )
+        return False
+
+
 def create_router(settings: Settings, database: Database) -> Router:
     router = Router()
 
@@ -1416,6 +1656,85 @@ def create_router(settings: Settings, database: Database) -> Router:
             callback.bot, callback.from_user.id, settings, 3, database
         )
 
+    @router.callback_query(F.data.startswith("support:reply:"))
+    async def support_reply_start(callback: CallbackQuery) -> None:
+        if callback.from_user is None or callback.message is None:
+            return
+        if not is_admin(callback.from_user.id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        if not settings.support_chat_id:
+            await callback.answer("Чат поддержки не настроен", show_alert=True)
+            return
+        parts = callback.data.split(":", maxsplit=2)
+        if len(parts) != 3 or not parts[2].isdigit():
+            await callback.answer("Некорректный запрос", show_alert=True)
+            return
+        user_telegram_id = int(parts[2])
+        thread_id = await database.get_support_thread_id(user_telegram_id)
+        if thread_id is None:
+            await callback.answer("Тема пользователя не найдена", show_alert=True)
+            return
+        if callback.message.chat.id != settings.support_chat_id:
+            await callback.answer("Кнопка только в чате поддержки", show_alert=True)
+            return
+        if callback.message.message_thread_id != thread_id:
+            await callback.answer(
+                "Откройте тему этого пользователя",
+                show_alert=True,
+            )
+            return
+        await database.set_admin_reply_session(
+            callback.from_user.id,
+            user_telegram_id,
+            thread_id,
+        )
+        await callback.answer()
+        await callback.message.answer(
+            "Напишите ответ в этой теме — пользователь получит его в боте."
+        )
+
+    @router.message(
+        F.chat.id == settings.support_chat_id,
+        F.message_thread_id,
+        F.text,
+    )
+    async def support_chat_admin_reply(message: Message) -> None:
+        if message.from_user is None or message.text is None:
+            return
+        if message.from_user.is_bot:
+            return
+        if not is_admin(message.from_user.id):
+            return
+
+        session = await database.get_admin_reply_session(message.from_user.id)
+        if session is None:
+            return
+        if int(session["thread_id"]) != int(message.message_thread_id):
+            await message.reply(
+                "Сначала нажмите «Ответить» в теме этого пользователя."
+            )
+            return
+
+        user_telegram_id = int(session["user_telegram_id"])
+        try:
+            await message.bot.send_message(
+                user_telegram_id,
+                f"Ответ:\n\n{message.text}",
+            )
+        except (TelegramForbiddenError, TelegramBadRequest) as error:
+            logging.exception(
+                "Не удалось отправить ответ пользователю %s: %s",
+                user_telegram_id,
+                error,
+            )
+            await message.reply("Не удалось отправить — пользователь недоступен.")
+            return
+
+        await database.mark_questions_answered(user_telegram_id)
+        await database.clear_admin_reply_session(message.from_user.id)
+        await message.reply("Отправлено ✓")
+
     @router.callback_query(F.data == "question:start")
     async def request_question(callback: CallbackQuery) -> None:
         await database.set_status(callback.from_user.id, "Ожидает вопрос")
@@ -1615,25 +1934,40 @@ def create_router(settings: Settings, database: Database) -> Router:
     async def receive_text(message: Message) -> None:
         if message.from_user is None:
             return
+        if message.chat.id == settings.support_chat_id:
+            return
         status = await database.get_status(message.from_user.id)
-        if status != "Ожидает вопрос":
+        if status not in QUESTION_STATUSES:
             return
         text = message.text or ""
         await database.save_question(message.from_user.id, text)
         await message.answer(
             "Спасибо 🤍 Вопрос передан. Мы обязательно ответим."
         )
-        for admin_id in settings.admin_ids:
-            try:
-                await message.bot.send_message(
-                    admin_id,
-                    "Новый вопрос из бота\n\n"
-                    f"От: {message.from_user.full_name} "
-                    f"(@{message.from_user.username or 'без username'}, "
-                    f"ID {message.from_user.id})\n\n{text}",
-                )
-            except Exception:
-                logging.exception("Не удалось отправить вопрос менеджеру %s", admin_id)
+        delivered = await forward_question_to_support(
+            message.bot,
+            settings,
+            database,
+            message.from_user.id,
+            full_name=message.from_user.full_name,
+            username=message.from_user.username,
+            text=text,
+        )
+        if not delivered and settings.admin_ids:
+            for admin_id in settings.admin_ids:
+                try:
+                    await message.bot.send_message(
+                        admin_id,
+                        "Новый вопрос из бота\n\n"
+                        f"От: {message.from_user.full_name} "
+                        f"(@{message.from_user.username or 'без username'}, "
+                        f"ID {message.from_user.id})\n\n{text}",
+                    )
+                except Exception:
+                    logging.exception(
+                        "Не удалось отправить вопрос менеджеру %s",
+                        admin_id,
+                    )
 
     return router
 
