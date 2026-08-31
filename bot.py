@@ -1522,13 +1522,6 @@ def create_router(settings: Settings, database: Database) -> Router:
         await database.start_user(message)
         if message.from_user is None:
             return
-        admin = is_admin(message.from_user.id)
-        if admin:
-            await message.answer(
-                "⚙️ Админ-панель",
-                reply_markup=start_keyboard(True),
-            )
-            return
         await present_purchase_funnel(
             message.bot,
             message.chat.id,
