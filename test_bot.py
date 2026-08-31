@@ -23,6 +23,7 @@ from bot import (
     build_yookassa_provider_data,
     find_step_image,
     format_funnel_metrics,
+    format_price_rub,
     format_support_topic_name,
     normalize_telegram_proxy,
     payment_url_for_user,
@@ -94,10 +95,10 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
     def test_admin_button_is_visible_only_for_admin_start(self) -> None:
         user_buttons = start_keyboard(False).inline_keyboard
         admin_buttons = start_keyboard(True).inline_keyboard
-        self.assertEqual(len(user_buttons), 1)
-        self.assertEqual(len(admin_buttons), 2)
+        self.assertEqual(len(user_buttons), 0)
+        self.assertEqual(len(admin_buttons), 1)
         self.assertEqual(
-            admin_buttons[1][0].callback_data,
+            admin_buttons[0][0].callback_data,
             "admin:open",
         )
         self.assertEqual(len(truncate_text("x" * 5000, 3000)), 3000)
@@ -185,21 +186,23 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
                     from_user=SimpleNamespace(id=1, username="u", full_name="U")
                 )
             )
-            for step in range(1, 5):
+            for step in range(1, 3):
                 await send_step(bot, 1, current_settings, step, database)
 
             self.assertEqual(len(bot.photos), 0)
-            self.assertEqual(len(bot.messages), 4)
+            self.assertEqual(len(bot.messages), 2)
             card, after, _, _ = STEPS[1]
-            self.assertEqual(bot.messages[0][1], f"{card}\n\n{after}")
+            price = format_price_rub(current_settings.course_price_kopecks)
+            self.assertEqual(bot.messages[0][1], card.format(price=price))
 
     async def test_step_with_image_follows_tz_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             image_dir = Path(temp_dir)
-            (image_dir / "IMG_1.JPG").write_bytes(b"placeholder")
+            (image_dir / "IMG_7.JPG").write_bytes(b"placeholder")
             bot = FakeBot()
             card, after, _, _ = STEPS[1]
             path = Path(temp_dir)
+            current = settings(image_dir)
             database = Database(path / "test.sqlite3")
             await database.initialize()
             await database.start_user(
@@ -208,11 +211,11 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
-            await send_step(bot, 1, settings(image_dir), 1, database)
+            await send_step(bot, 1, current, 1, database)
 
-            card, after, _, _ = STEPS[1]
+            price = format_price_rub(current.course_price_kopecks)
             self.assertEqual(len(bot.photos), 1)
-            self.assertEqual(bot.photos[0][2], f"{card}\n\n{after}")
+            self.assertEqual(bot.photos[0][2], card.format(price=price))
             self.assertIsNotNone(bot.photos[0][3])
             self.assertEqual(len(bot.messages), 0)
 
@@ -229,9 +232,10 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
     async def test_sparse_images_are_not_assigned_to_wrong_steps(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             image_dir = Path(temp_dir)
-            (image_dir / "step_2.jpg").write_bytes(b"placeholder")
+            (image_dir / "step_1.jpg").write_bytes(b"placeholder")
             bot = FakeBot()
             path = Path(temp_dir)
+            current = settings(image_dir)
             database = Database(path / "test.sqlite3")
             await database.initialize()
             await database.start_user(
@@ -240,12 +244,13 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
-            await send_step(bot, 1, settings(image_dir), 1, database)
+            await send_step(bot, 1, current, 1, database)
 
             self.assertEqual(len(bot.photos), 0)
             self.assertEqual(len(bot.messages), 1)
-            card, after, _, _ = STEPS[1]
-            self.assertEqual(bot.messages[0][1], f"{card}\n\n{after}")
+            card, _, _, _ = STEPS[1]
+            price = format_price_rub(current.course_price_kopecks)
+            self.assertEqual(bot.messages[0][1], card.format(price=price))
 
     async def test_payment_is_idempotent_and_unknown_grant_is_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -354,14 +359,13 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(metrics["total_users"], 1)
             self.assertEqual(metrics["funnel"]["Запустил бота"], 1)
-            self.assertEqual(metrics["funnel"]["Прошёл знакомство"], 1)
-            self.assertEqual(metrics["funnel"]["Узнал себя"], 1)
+            self.assertEqual(metrics["funnel"]["Увидел курс"], 1)
             self.assertEqual(metrics["funnel"]["Перешёл к оплате"], 1)
             self.assertEqual(metrics["funnel"]["Оплата не завершена"], 1)
             self.assertEqual(metrics["segments"]["Неопределённость"], 1)
             self.assertNotIn("purchased", metrics)
             text = format_funnel_metrics(metrics)
-            self.assertIn("Шаг 3 — Увидел курс", text)
+            self.assertIn("Слайд — Увидел курс", text)
             self.assertNotIn("Посмотрел презентацию", text)
             self.assertNotIn("Увидел цену", text)
             self.assertNotIn("Конверсия", text)
@@ -447,7 +451,7 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bot.messages[0][1], REMINDERS[0][0])
             self.assertEqual(
                 bot.messages[0][2].inline_keyboard[0][0].callback_data,
-                "step:3",
+                "step:1",
             )
             row = (await database.payment_candidates())[0]
             self.assertEqual(int(row["reminders_sent"]), 1)
@@ -466,7 +470,7 @@ class BotMvpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sent, 1)
             self.assertEqual(
                 bot.messages[1][2].inline_keyboard[0][0].callback_data,
-                "step:3",
+                "step:1",
             )
 
             async with database.connect() as connection:

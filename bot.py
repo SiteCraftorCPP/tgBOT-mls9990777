@@ -793,27 +793,15 @@ class Database:
 
 
 STEP_IMAGE_MAP: dict[int, int] = {
-    1: 1,
-    2: 3,
-    3: 7,
-    4: 10,
+    1: 7,
+    2: 10,
 }
-FUNNEL_LAST_STEP = 3
-SUCCESS_STEP = 4
+FUNNEL_LAST_STEP = 1
+SUCCESS_STEP = 2
 
 
 STEPS: dict[int, tuple[str, str, str, str]] = {
     1: (
-        "Здравствуйте, меня зовут Юля.\n\n"
-        "Я — коуч. Не психолог, а именно коуч, который помогает женщинам "
-        "лучше понять себя, отношения и свои сценарии.\n\n"
-        "Здесь я мягко и честно помогу тебе посмотреть на свою жизнь глубже.",
-        "Поехали?",
-        "Дальше",
-        "step:2",
-    ),
-    2: ("", "", "", "step:2"),
-    3: (
         "Всё, что нужно, чтобы начать менять свой сценарий отношений.\n\n"
         "Внутри курса:\n"
         "— короткие видеоуроки;\n"
@@ -829,24 +817,13 @@ STEPS: dict[int, tuple[str, str, str, str]] = {
         "Оплатить",
         "payment:start",
     ),
-    4: (
+    2: (
         "Оплата прошла успешно 🤍\n\nНачинай с первого урока.",
         "",
         "Перейти к урокам",
         "course:open",
     ),
 }
-
-STEP_2_CARD = (
-    "Возможно, ты узнаешь себя.\n"
-    "Мужчины проявляют интерес, но не делают серьёзных шагов.\n"
-    "Отношения начинаются ярко, а потом остаётся неопределённость.\n"
-    "Ты долго ждёшь, что мужчина изменится.\n"
-    "Снаружи ты сильная, а внутри устала всё тянуть на себе.\n\n"
-    "Если откликнулся хотя бы один пункт — дело не в невезении.\n"
-    "Чаще всего это повторяющийся сценарий, который можно увидеть и изменить.\n\n"
-    "Что ближе?"
-)
 
 SEGMENTS = {
     "no_steps": "Нет серьёзных шагов",
@@ -857,8 +834,6 @@ SEGMENTS = {
 
 FUNNEL_EVENTS = (
     "Запустил бота",
-    "Прошёл знакомство",
-    "Узнал себя",
     "Увидел курс",
     "Перешёл к оплате",
     "Оплата не завершена",
@@ -869,13 +844,13 @@ FUNNEL_EVENTS = (
 LEGACY_FUNNEL_EVENT_ALIASES: dict[str, str] = {
     "Посмотрел презентацию курса": "Увидел курс",
     "Увидел цену": "Увидел курс",
+    "Прошёл знакомство": "Увидел курс",
+    "Узнал себя": "Увидел курс",
 }
 
 FUNNEL_EVENT_LABELS: dict[str, str] = {
     "Запустил бота": "Старт",
-    "Прошёл знакомство": "Шаг 1",
-    "Узнал себя": "Шаг 2",
-    "Увидел курс": "Шаг 3",
+    "Увидел курс": "Слайд",
     "Перешёл к оплате": "Оплата",
     "Оплата не завершена": "Напоминания",
     "Купил курс": "Покупка",
@@ -892,8 +867,7 @@ SEGMENT_EVENTS = tuple(SEGMENTS.values())
 ADMIN_PAGE_SIZE = 6
 
 STATUS_BY_STEP = {
-    2: "Прошёл знакомство",
-    3: "Увидел курс",
+    1: "Увидел курс",
 }
 
 REMINDERS = (
@@ -1120,6 +1094,41 @@ def build_step_markup(
     return keyboard(button_text, callback_data)
 
 
+async def open_course_payment(
+    bot: Bot,
+    chat_id: int,
+    telegram_id: int,
+    settings: Settings,
+    database: Database,
+) -> None:
+    if await database.is_purchased(telegram_id):
+        return
+    if not settings.payment_provider_token:
+        return
+    await database.start_payment(telegram_id)
+    try:
+        await send_course_invoice(bot, chat_id, settings)
+    except TelegramBadRequest as error:
+        logging.exception("Не удалось открыть оплату для %s: %s", telegram_id, error)
+
+
+async def present_purchase_funnel(
+    bot: Bot,
+    chat_id: int,
+    telegram_id: int,
+    settings: Settings,
+    database: Database,
+) -> None:
+    if await database.is_purchased(telegram_id):
+        await send_step(bot, chat_id, settings, SUCCESS_STEP, database)
+        return
+    status = STATUS_BY_STEP.get(FUNNEL_LAST_STEP)
+    if status:
+        await database.set_status(telegram_id, status)
+    await send_step(bot, chat_id, settings, FUNNEL_LAST_STEP, database)
+    await open_course_payment(bot, chat_id, telegram_id, settings, database)
+
+
 async def send_step(
     bot: Bot,
     chat_id: int,
@@ -1127,40 +1136,6 @@ async def send_step(
     step: int,
     database: Database,
 ) -> None:
-    if step == 2:
-        answers = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="Мужчины не делают серьёзных шагов",
-                        callback_data="segment:no_steps",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="Долго остаюсь в неопределённости",
-                        callback_data="segment:uncertainty",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="Выбираю недоступных мужчин",
-                        callback_data="segment:unavailable",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="Устала всё тянуть сама",
-                        callback_data="segment:all_alone",
-                    )
-                ],
-            ]
-        )
-        await send_step_card(
-            bot, chat_id, settings, step, STEP_2_CARD, reply_markup=answers
-        )
-        return
-
     card, after, button_text, callback_data = STEPS[step]
     price_label = format_price_rub(settings.course_price_kopecks)
     if step == FUNNEL_LAST_STEP:
@@ -1186,7 +1161,7 @@ async def grant_paid_access(
 
 
 def start_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text="Начать", callback_data="step:1")]]
+    rows: list[list[InlineKeyboardButton]] = []
     if is_admin:
         rows.append(
             [
@@ -1545,10 +1520,21 @@ def create_router(settings: Settings, database: Database) -> Router:
     @router.message(CommandStart())
     async def start(message: Message) -> None:
         await database.start_user(message)
-        admin = bool(message.from_user and is_admin(message.from_user.id))
-        await message.answer(
-            "Здравствуй 🤍 Почему при внимании мужчин сложно прийти к семье — разберём.",
-            reply_markup=start_keyboard(admin),
+        if message.from_user is None:
+            return
+        admin = is_admin(message.from_user.id)
+        if admin:
+            await message.answer(
+                "⚙️ Админ-панель",
+                reply_markup=start_keyboard(True),
+            )
+            return
+        await present_purchase_funnel(
+            message.bot,
+            message.chat.id,
+            message.from_user.id,
+            settings,
+            database,
         )
 
     @router.message(Command("admin"))
@@ -1734,6 +1720,14 @@ def create_router(settings: Settings, database: Database) -> Router:
         if status:
             await database.set_status(callback.from_user.id, status)
         await send_step(callback.bot, callback.from_user.id, settings, step, database)
+        if step == FUNNEL_LAST_STEP:
+            await open_course_payment(
+                callback.bot,
+                callback.message.chat.id,
+                callback.from_user.id,
+                settings,
+                database,
+            )
 
     @router.callback_query(F.data.startswith("segment:"))
     async def save_segment(callback: CallbackQuery) -> None:
@@ -1748,7 +1742,14 @@ def create_router(settings: Settings, database: Database) -> Router:
         await callback.answer()
         await database.set_status(callback.from_user.id, "Увидел курс")
         await send_step(
-            callback.bot, callback.from_user.id, settings, 3, database
+            callback.bot, callback.from_user.id, settings, FUNNEL_LAST_STEP, database
+        )
+        await open_course_payment(
+            callback.bot,
+            callback.message.chat.id,
+            callback.from_user.id,
+            settings,
+            database,
         )
 
     @router.callback_query(F.data.startswith("support:reply:"))
