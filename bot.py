@@ -849,12 +849,12 @@ LEGACY_FUNNEL_EVENT_ALIASES: dict[str, str] = {
 }
 
 FUNNEL_EVENT_LABELS: dict[str, str] = {
-    "Запустил бота": "Старт",
-    "Увидел курс": "Слайд",
-    "Перешёл к оплате": "Оплата",
-    "Оплата не завершена": "Напоминания",
-    "Купил курс": "Покупка",
-    "Получил доступ": "Доступ",
+    "Запустил бота": "1. /start",
+    "Увидел курс": "2. Слайд с ценой",
+    "Перешёл к оплате": "3. Invoice открыт",
+    "Оплата не завершена": "4. Напоминания",
+    "Купил курс": "5. Оплата прошла",
+    "Получил доступ": "6. Доступ выдан",
 }
 
 
@@ -1191,15 +1191,18 @@ def format_funnel_metrics(metrics: dict[str, object]) -> str:
         )
         for event in FUNNEL_EVENTS
     ]
-    segment_lines = [
-        f"{segment}: {segments.get(segment, 0)}" for segment in SEGMENT_EVENTS
-    ]
-    return (
-        "📊 Метрики воронки\n\n"
+    text = (
+        "📊 Метрики воронки\n"
+        "Схема: 1 слайд → invoice → доступ\n\n"
         + "\n".join(funnel_lines)
-        + "\n\nСегменты ответов:\n"
-        + "\n".join(segment_lines)
     )
+    segment_total = sum(int(segments.get(segment, 0)) for segment in SEGMENT_EVENTS)
+    if segment_total:
+        segment_lines = [
+            f"{segment}: {segments.get(segment, 0)}" for segment in SEGMENT_EVENTS
+        ]
+        text += "\n\nСегменты (старая воронка):\n" + "\n".join(segment_lines)
+    return text
 
 
 def admin_main_keyboard() -> InlineKeyboardMarkup:
